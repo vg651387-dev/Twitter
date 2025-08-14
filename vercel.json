@@ -1,0 +1,6 @@
+{
+  "crons": [
+    { "path": "/api/tweet?image_source=google", "schedule": "0 14 * * *" },
+    { "path": "/api/tweet?news_topic=technology&image_source=google", "schedule": "5 14 * * *" }
+  ]
+}
