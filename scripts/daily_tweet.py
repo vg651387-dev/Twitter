@@ -5,7 +5,7 @@ import hashlib
 import os
 import random
 import sys
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Pillow is optional for dry-run or no-image modes
 try:
@@ -225,30 +225,199 @@ def post_to_twitter(status_text: str, media_path: Optional[str]) -> None:
     api.update_status(status=status_text, media_ids=media_ids)
 
 
+# --- New helpers for Google Images and News ---
+
+def fetch_image_from_google(query: str, output_path: str) -> Optional[str]:
+    """Fetch an image via Google Custom Search JSON API and save to output_path.
+    Requires env vars GOOGLE_API_KEY and GOOGLE_CSE_ID.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    cse_id = os.environ.get("GOOGLE_CSE_ID")
+    if not api_key or not cse_id:
+        print("Google API not configured; skipping Google image fetch.")
+        return None
+
+    import requests
+
+    params = {
+        "key": api_key,
+        "cx": cse_id,
+        "q": query,
+        "searchType": "image",
+        "safe": "active",
+        "num": 10,
+    }
+    rights = os.environ.get("GOOGLE_IMAGE_RIGHTS_FILTER")
+    if rights:
+        params["rights"] = rights
+
+    try:
+        resp = requests.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("items") or []
+        # Prefer larger images with jpeg/png formats
+        candidates: List[str] = []
+        for item in items:
+            link = item.get("link")
+            if not link:
+                continue
+            if any(link.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
+                candidates.append(link)
+        if not candidates and items:
+            candidates = [i.get("link") for i in items if i.get("link")]
+        if not candidates:
+            print("No image results from Google.")
+            return None
+
+        image_url = candidates[0]
+        r = requests.get(image_url, timeout=20)
+        r.raise_for_status()
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+        return output_path
+    except Exception as e:
+        print(f"Failed to fetch Google image: {e}")
+        return None
+
+
+def fetch_top_news(topic: str) -> Optional[Tuple[str, str]]:
+    """Fetch top news headline and link for a topic using Google News RSS (no API key required)."""
+    import requests
+    import xml.etree.ElementTree as ET
+    import urllib.parse as urlparse
+
+    rss_url = f"https://news.google.com/rss/search?q={urlparse.quote(topic)}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        resp = requests.get(rss_url, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        # Find first item
+        channel = root.find("channel")
+        if channel is None:
+            return None
+        item = channel.find("item")
+        if item is None:
+            return None
+        title_el = item.find("title")
+        link_el = item.find("link")
+        if title_el is None or link_el is None:
+            return None
+        title = title_el.text or ""
+        link = link_el.text or ""
+        # Google News links often redirect; prefer as-is
+        return (title.strip(), link.strip())
+    except Exception as e:
+        print(f"Failed to fetch news: {e}")
+        return None
+
+
+def build_news_tweet(title: str, url: str, topic: str) -> str:
+    """Compose a tweet containing a news headline and link within 280 chars."""
+    base_hashtags = f"\n\n#news #{topic.lower().replace(' ', '')}"
+    max_len = 280
+    # Reserve 25 chars for t.co shortened link + newline
+    reserved = len(base_hashtags) + 25 + 1
+    allowed_title_len = max_len - reserved
+    text = title
+    if len(text) > allowed_title_len:
+        text = text[: max(0, allowed_title_len - 1)].rstrip() + "…"
+    return f"{text}\n{url}{base_hashtags}"
+
+
+def derive_image_query(preferred_query: Optional[str], news_title: Optional[str], topic: Optional[str], tip: Optional[str]) -> str:
+    for candidate in [preferred_query, news_title, topic, tip]:
+        if candidate and candidate.strip():
+            # Use up to first 8 words to keep query concise
+            words = candidate.strip().split()
+            return " ".join(words[:8])
+    return "technology"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Post a daily coding tip with image to Twitter.")
     parser.add_argument("--dry-run", action="store_true", help="Generate content and print without posting.")
     parser.add_argument("--no-image", action="store_true", help="Do not generate or attach an image.")
     parser.add_argument("--tips-file", default=os.path.join(os.path.dirname(__file__), "..", "content", "coding_tips.txt"), help="Path to a newline-delimited tips file.")
+    # New options
+    parser.add_argument("--image-source", choices=["generated", "google", "none"], default="generated", help="Select image source: generated (default), google, or none.")
+    parser.add_argument("--image-query", default="", help="Query for fetching image when using --image-source google.")
+    parser.add_argument("--news-topic", default="", help="If set, post news for this topic instead of a coding tip.")
     args = parser.parse_args()
 
-    tips = read_tips_from_file(os.path.abspath(args.tips_file))
-    if not tips:
-        tips = get_default_tips()
+    # Select content: news or coding tip
+    tweet_text: str
 
-    idx = deterministic_index(len(tips))
-    tip = tips[idx]
+    news_title: Optional[str] = None
+    news_url: Optional[str] = None
 
-    tweet_text = build_tweet_text(tip)
+    if args.news_topic.strip():
+        news = fetch_top_news(args.news_topic.strip())
+        if news:
+            news_title, news_url = news
+            tweet_text = build_news_tweet(news_title, news_url, args.news_topic.strip())
+        else:
+            print("News fetch failed; falling back to coding tip.")
+            tips = read_tips_from_file(os.path.abspath(args.tips_file))
+            if not tips:
+                tips = get_default_tips()
+            idx = deterministic_index(len(tips))
+            tip = tips[idx]
+            tweet_text = build_tweet_text(tip)
+    else:
+        tips = read_tips_from_file(os.path.abspath(args.tips_file))
+        if not tips:
+            tips = get_default_tips()
+        idx = deterministic_index(len(tips))
+        tip = tips[idx]
+        tweet_text = build_tweet_text(tip)
 
+    # Determine media
     media_path = None
-    if not args.no_image:
-        seed = idx
+    if not args.no_image and args.image_source != "none":
         tmp_dir = os.environ.get("RUNNER_TEMP") or "/tmp"
-        media_path = os.path.join(tmp_dir, "daily_tweet.jpg")
-        generated = generate_image_with_text(tip, media_path, seed)
-        if generated is None:
-            media_path = None
+        desired_output = os.path.join(tmp_dir, "daily_tweet.jpg")
+
+        if args.image_source == "google":
+            # Derive query from provided query, news, or tip
+            candidate_tip = None
+            if not args.news_topic.strip():
+                # When not posting news, derive from tip text if available
+                # Re-read tips to obtain the same selected tip for query context
+                tips = read_tips_from_file(os.path.abspath(args.tips_file))
+                if not tips:
+                    tips = get_default_tips()
+                idx = deterministic_index(len(tips))
+                candidate_tip = tips[idx]
+            query = derive_image_query(args.image_query, news_title, args.news_topic.strip() or None, candidate_tip)
+            fetched = fetch_image_from_google(query, desired_output)
+            if fetched:
+                media_path = fetched
+                print(f"Attached Google image for query: '{query}'.")
+            else:
+                print("Falling back to generated image.")
+                if args.news_topic.strip():
+                    seed = deterministic_index(1000)
+                    media_path = generate_image_with_text(news_title or args.news_topic.strip(), desired_output, seed)
+                else:
+                    tips = read_tips_from_file(os.path.abspath(args.tips_file))
+                    if not tips:
+                        tips = get_default_tips()
+                    idx = deterministic_index(len(tips))
+                    tip = tips[idx]
+                    media_path = generate_image_with_text(tip, desired_output, idx)
+        else:
+            # generated image
+            if args.news_topic.strip():
+                seed = deterministic_index(1000)
+                media_path = generate_image_with_text(news_title or args.news_topic.strip(), desired_output, seed)
+            else:
+                tips = read_tips_from_file(os.path.abspath(args.tips_file))
+                if not tips:
+                    tips = get_default_tips()
+                idx = deterministic_index(len(tips))
+                tip = tips[idx]
+                media_path = generate_image_with_text(tip, desired_output, idx)
 
     if args.dry_run:
         print("[DRY RUN] Would post tweet:\n")
