@@ -1,0 +1,41 @@
+Keep variable and function names descriptive and unambiguous.
+Small, focused functions are easier to test and reuse.
+Validate inputs early and fail fast with clear messages.
+Write tests for edge cases first; they define expectations.
+Make it work, then make it fast—measure before optimizing.
+Use atomic commits; each should represent a coherent change.
+Document why a decision was made, not just what the code does.
+Log context (ids, parameters), not noise.
+Handle exceptions explicitly; avoid bare excepts.
+Favor composition over inheritance to reduce coupling.
+Pin dependency versions for reproducibility.
+Automate formatting and linting; keep diffs clean.
+Prefer immutable data structures where sensible.
+Use positive boolean names (isEnabled, hasAccess).
+Review diffs for readability, not just correctness.
+Prefer pure functions; minimize shared state.
+Use feature flags for risky changes and gradual rollouts.
+Add metrics and tracing around critical paths.
+Design APIs with clear contracts and error handling.
+Make jobs idempotent so retries are safe.
+Always paginate APIs; never assume small datasets.
+Cache with a strategy: TTLs, invalidation, and fallbacks.
+Validate input on both client and server.
+Extract magic numbers into named constants.
+Use UTC for all timestamps and store ISO 8601.
+Separate configuration from code via environment variables.
+Aim to keep functions under ~20–30 lines.
+Write meaningful commit messages: what changed and why.
+Use guard clauses to reduce nesting and improve clarity.
+Favor explicit behavior over implicit side effects.
+Add type hints where they add clarity and safety.
+Bisect regressions to quickly locate breaking changes.
+Treat code review as a learning and teaching opportunity.
+Write end-to-end tests for the most critical flows.
+Avoid global mutable state; pass dependencies explicitly.
+Organize modules by domain, not only by technical layers.
+Track error budgets and prioritize reliability work.
+Prefer dependency injection over singletons.
+Build CLIs that are scriptable: flags, exit codes, stdout.
+Back up documentation with runnable examples.
+Refactor mercilessly when code smells accumulate.
