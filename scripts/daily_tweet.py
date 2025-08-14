@@ -334,6 +334,115 @@ def derive_image_query(preferred_query: Optional[str], news_title: Optional[str]
     return "technology"
 
 
+# New: programmatic entry point for serverless usage
+# Returns a dict with keys: ok (bool), dry_run (bool), tweet_text (str), media_path (Optional[str]), error (Optional[str])
+def run_daily_tweet(
+    dry_run: bool = False,
+    no_image: bool = False,
+    tips_file: Optional[str] = None,
+    image_source: str = "generated",
+    image_query: str = "",
+    news_topic: str = "",
+) -> dict:
+    if tips_file is None:
+        tips_file = os.path.join(os.path.dirname(__file__), "..", "content", "coding_tips.txt")
+
+    # Select content: news or coding tip
+    tweet_text: str
+    news_title: Optional[str] = None
+    news_url: Optional[str] = None
+
+    if news_topic.strip():
+        news = fetch_top_news(news_topic.strip())
+        if news:
+            news_title, news_url = news
+            tweet_text = build_news_tweet(news_title, news_url, news_topic.strip())
+        else:
+            # Fallback to coding tip
+            tips = read_tips_from_file(os.path.abspath(tips_file))
+            if not tips:
+                tips = get_default_tips()
+            idx = deterministic_index(len(tips))
+            tip = tips[idx]
+            tweet_text = build_tweet_text(tip)
+    else:
+        tips = read_tips_from_file(os.path.abspath(tips_file))
+        if not tips:
+            tips = get_default_tips()
+        idx = deterministic_index(len(tips))
+        tip = tips[idx]
+        tweet_text = build_tweet_text(tip)
+
+    # Determine media
+    media_path: Optional[str] = None
+    if not no_image and image_source != "none":
+        tmp_dir = os.environ.get("RUNNER_TEMP") or "/tmp"
+        desired_output = os.path.join(tmp_dir, "daily_tweet.jpg")
+
+        if image_source == "google":
+            candidate_tip: Optional[str] = None
+            if not news_topic.strip():
+                # Derive from tip text when not posting news
+                tips = read_tips_from_file(os.path.abspath(tips_file))
+                if not tips:
+                    tips = get_default_tips()
+                idx = deterministic_index(len(tips))
+                candidate_tip = tips[idx]
+            query = derive_image_query(image_query, news_title, news_topic.strip() or None, candidate_tip)
+            fetched = fetch_image_from_google(query, desired_output)
+            if fetched:
+                media_path = fetched
+            else:
+                if news_topic.strip():
+                    seed = deterministic_index(1000)
+                    media_path = generate_image_with_text(news_title or news_topic.strip(), desired_output, seed)
+                else:
+                    tips = read_tips_from_file(os.path.abspath(tips_file))
+                    if not tips:
+                        tips = get_default_tips()
+                    idx = deterministic_index(len(tips))
+                    tip = tips[idx]
+                    media_path = generate_image_with_text(tip, desired_output, idx)
+        else:
+            # generated image
+            if news_topic.strip():
+                seed = deterministic_index(1000)
+                media_path = generate_image_with_text(news_title or news_topic.strip(), desired_output, seed)
+            else:
+                tips = read_tips_from_file(os.path.abspath(tips_file))
+                if not tips:
+                    tips = get_default_tips()
+                idx = deterministic_index(len(tips))
+                tip = tips[idx]
+                media_path = generate_image_with_text(tip, desired_output, idx)
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "tweet_text": tweet_text,
+            "media_path": media_path,
+        }
+
+    try:
+        post_to_twitter(tweet_text, media_path)
+    except Exception as e:
+        return {
+            "ok": False,
+            "dry_run": False,
+            "tweet_text": tweet_text,
+            "media_path": media_path,
+            "error": str(e),
+        }
+
+    return {
+        "ok": True,
+        "dry_run": False,
+        "tweet_text": tweet_text,
+        "media_path": media_path,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Post a daily coding tip with image to Twitter.")
     parser.add_argument("--dry-run", action="store_true", help="Generate content and print without posting.")
